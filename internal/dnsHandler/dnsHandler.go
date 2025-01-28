@@ -12,8 +12,15 @@ import (
 	"github.com/google/gopacket/pcap"
 
 	"github.com/ygzaydn/go-dnswatcher/internal/config"
+	"github.com/ygzaydn/go-dnswatcher/internal/kpi"
 )
 
+var metrics *kpi.DNSMetrics
+
+
+func init() {
+    metrics = kpi.NewDNSMetrics()
+}
 
 func startDNSListener(server config.DNSEntity, wg* sync.WaitGroup){
 	defer wg.Done()
@@ -46,6 +53,7 @@ func startDNSListener(server config.DNSEntity, wg* sync.WaitGroup){
         dstIP := packet.NetworkLayer().NetworkFlow().Dst()
 
         if dns.QR {
+            metrics.RecordResponse(dns.ResponseCode == layers.DNSResponseCodeNoErr)
             log.Printf("DNS Response from %v to %v [%s]", srcIP, dstIP, dns.ResponseCode)
             for _, answer := range dns.Answers {
                 log.Printf("  Answer: %s (%s) -> %v", 
@@ -61,6 +69,7 @@ func startDNSListener(server config.DNSEntity, wg* sync.WaitGroup){
                     string(question.Name),
                     layers.DNSType(question.Type),
                 )
+                metrics.IncrementQuery(uint16(question.Type))
             }
         }
     }
@@ -69,7 +78,6 @@ func startDNSListener(server config.DNSEntity, wg* sync.WaitGroup){
 
 func Start(cfg config.Config) {
 	var wg sync.WaitGroup
-
 	for _,server := range cfg.DnsServers {
 		wg.Add(1)
 		go startDNSListener(server, &wg)
@@ -77,6 +85,19 @@ func Start(cfg config.Config) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+    ticker := time.NewTicker(10 * time.Second)
+    go func() {
+        for {
+            select {
+            case <-ticker.C:
+                metrics.PrintStats()
+            case <-ctx.Done():
+                ticker.Stop()
+                return
+            }
+        }
+    }()
 
 	go func() {
 		wg.Wait()
